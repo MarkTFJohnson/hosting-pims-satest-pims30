@@ -1,0 +1,171 @@
+---
+
+service:
+  name: pims30
+  port: 3000
+  protocol: https
+  cpu: 256
+  memory: 1024
+  desiredCount: 2
+  imageRepository: 333445849047.dkr.ecr.us-east-1.amazonaws.com/pims-v3-0-branch:a74cff2
+  healthEndpoint: /status_check
+  hostPatterns:
+  - pims30.*
+  database:
+    name: pims
+    engine: postgres
+    masterUsername: pims30
+  environment:
+    DB_ENDPOINT: ${DatabaseEndpointAddress}
+    DB_DATABASE: ${DatabaseName}
+    DB_USERNAME: ${DatabaseMasterUsername}
+    DB_PASSWORD: ${DatabaseMasterPassword}
+    AWS_BUCKET_NAME: ${pimsBucket}
+    RAILS_ENV: production
+    AWS_REGION: ${AWS::Region}
+    CUSTOMER_PREFIX: pims30
+    AWS_DOCS_BUCKET_NAME: pims-docs
+  pipeline:
+    source:
+      provider: GitHub
+      repo: SkylandAnalytics/hosting-pims-satest-pims30
+      branch: master
+    build:
+      image: aws/codebuild/eb-ruby-2.3-amazonlinux-64:2.1.6
+      disabled: true
+    acceptance:
+      disabled: true
+    production:
+      environment: satest
+
+templates:
+  mu-service-pims30-satest:
+    Resources:
+      ElbTargetGroup:
+        Properties:
+          TargetGroupAttributes:
+          - Key: stickiness.enabled
+            Value: true
+          - Key: stickiness.type
+            Value: lb_cookie
+      ParameterStorePolicy:
+        Type: "AWS::IAM::Policy"
+        Properties:
+          PolicyName: "parampolicy"
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+            - Sid: Stmt1500674506503
+              Action:
+              - ssm:DescribeParameters
+              - ssm:GetParameters
+              - ssm:GetParameter
+              - s3:*
+              Effect: Allow
+              Resource:
+              - Fn::Sub: arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/*
+              - Fn::GetAtt: pimsBucket.Arn
+              - Fn::Sub: ${pimsBucket.Arn}/*
+              - Fn::Sub: arn:aws:ecr:${AWS::Region}:${AWS::AccountId}:repository/pims/*
+              - arn:aws:s3:::pims-docs
+              - arn:aws:s3:::pims-docs/*
+          Roles:
+            - Ref: EcsTaskRole
+      pimsBucket:
+        Type: "AWS::S3::Bucket"
+        Properties:
+          VersioningConfiguration:
+            Status: Enabled
+      CloudWatchEventRole:
+        Type: "AWS::IAM::Role"
+        Properties:
+          AssumeRolePolicyDocument:
+            "Statement": [
+              {
+                "Action": [
+                    "sts:AssumeRole"
+                ],
+                "Effect": "Allow",
+                "Principal": {
+                    "Service": [
+                        "events.amazonaws.com"
+                    ]
+                }
+              }
+            ]
+      CloudWatchEventPolicy:
+        Type: "AWS::IAM::Policy"
+        Properties:
+          PolicyName: "ecs_scheduled_task_policy"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              -
+                Effect: "Allow"
+                Action: ecs:RunTask
+                Resource: "*"
+          Roles:
+            - Ref: "CloudWatchEventRole"
+      TargetControlEventRule:
+        Type: "AWS::Events::Rule"
+        Properties:
+          Description: "Runs the target control limit rake task every 10 minutes"
+          ScheduleExpression: rate(10 minutes)
+          State: "ENABLED"
+          Targets:
+            - Id: TargetControlEventRuleId
+              RoleArn:
+                Fn::GetAtt: [ CloudWatchEventRole, Arn ]
+              Arn:
+                Fn::Sub:
+                  - "arn:aws:ecs:${AWS::Region}:${AWS::AccountId}:cluster/${EcsClusterName}"
+                  - EcsClusterName: 'mu-environment-satest'
+              Input: '{ "containerOverrides": [ { "name": "pims30", "command": [ "rake", "recurring_tasks:update_statuses[TargetControlLimit]" ] } ] }'
+              EcsParameters:
+                TaskCount: 1
+                TaskDefinitionArn:
+                  Ref: MicroserviceTaskDefinition
+      SpecLimitEventRule:
+        Type: "AWS::Events::Rule"
+        Properties:
+          Description: "Runs the spec limit rake task every 10 minutes"
+          ScheduleExpression: rate(10 minutes)
+          State: "ENABLED"
+          Targets:
+            - Id: SpecLimitEventRuleId
+              RoleArn:
+                Fn::GetAtt: [ CloudWatchEventRole, Arn ]
+              Arn:
+                Fn::Sub:
+                  - "arn:aws:ecs:${AWS::Region}:${AWS::AccountId}:cluster/${EcsClusterName}"
+                  - EcsClusterName: mu-environment-satest
+              Input: '{ "containerOverrides": [ { "name": "pims30", "command": [ "rake", "recurring_tasks:update_statuses[SpecificationLimit]" ] } ] }'
+              EcsParameters:
+                TaskCount: 1
+                TaskDefinitionArn:
+                  Ref: MicroserviceTaskDefinition
+
+  mu-database-pims30-satest:
+      # The below two resources for creating security group ingress rules that will allow  the customer's internal network CIDR range access 
+      # for a VPN connection. Replace the CUSTOMER_NETWORK_CIDR_RANGE_1 and CUSTOMER_NETWORK_CIDR_RANGE_2 variables with the customer's network CIDR range(s).
+      # If the customer only has ONE network CIDR range, then comment out the following resource:
+      # - VPNRule2 (lines 163-171)
+    # Resources:
+    #   VPNRule1:
+    #     Type: AWS::EC2::SecurityGroupIngress
+    #     Properties:
+    #       IpProtocol: tcp
+    #       FromPort: '5432'
+    #       ToPort: '5432'
+    #       CidrIp: CUSTOMER_NETWORK_CIDR_RANGE_1  # will need to be unique per mu.yml file
+    #       GroupId:
+    #         Fn::GetAtt: DBSecurityGroup.GroupId
+    #   VPNRule2:
+    #     Type: AWS::EC2::SecurityGroupIngress
+    #     Properties:
+    #       IpProtocol: tcp
+    #       FromPort: '5432'
+    #       ToPort: '5432'
+    #       CidrIp: CUSTOMER_NETWORK_CIDR_RANGE_2 # will need to be unique per mu.yml file
+    #       GroupId:
+    #         Fn::GetAtt: DBSecurityGroup.GroupId

@@ -1,0 +1,10 @@
+version: 0.2
+phases:
+  build:
+    commands:
+      - bash run-task.sh mu-service-pims30-satest bundle exec rake db:schema:load RAILS_ENV=production
+      - bash run-task.sh mu-service-pims30-satest bundle exec rake db:seed RAILS_ENV=production
+      - bash run-task.sh mu-service-pims30-satest bundle exec rake db:migrate RAILS_ENV=production
+artifacts:
+  files:
+    - '**/*'
